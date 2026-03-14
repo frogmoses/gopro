@@ -94,6 +94,7 @@ GoPro ← gopro_bridge.py (USB capture) ← sentinel._capture_and_analyze()
 5. Main loop: event-triggered + timed captures → `_capture_and_analyze()`
 6. Each capture: `gopro_bridge.quick_capture()` → `vision_client.assess_roast_color()`
 7. DROP or Ctrl+C: `end_camera_session()`, save log, rsync to dev machine
+8. OFF (after DROP): `_link_alog()` extracts `roastUUID` + `roastbatchnr` from newest `.alog`
 
 ## Key Parameters and Locations
 
@@ -120,16 +121,22 @@ VISION_MODEL = "claude-sonnet-4-5-20250929"
 SERIAL = os.environ.get("GOPRO_SERIAL")  # last 3 digits, from .env
 ```
 
-### WebSocket server — `artisan_sync.py:37-38`
+### WebSocket server — `artisan_sync.py:40-41`
 ```python
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8765
 ```
 
-### Log push destination — `sentinel.py`
+### Log push destination — `sentinel.py:201`
 ```python
 dest = os.environ.get("SENTINEL_RSYNC_DEST")  # e.g. user@host:~/path/captures/
 ```
+
+### Artisan save directory — `sentinel.py:169-171`
+```python
+save_dir = os.environ.get("ARTISAN_SAVE_DIR", "")  # default: ~/coffee-roasts
+```
+Used by `_link_alog()` to find the newest `.alog` after OFF event.
 
 ## GoPro Bridge Functions
 
@@ -210,8 +217,9 @@ Sentinel runs a WebSocket **server** on port 8765. Artisan connects as a client.
 | FCe | `send({"event": "FCe"})` | |
 | DROP | N/A | Hottop Command uses this slot |
 | COOL END | `send({"event": "DROP"})` | Sends DROP, ends session |
+| OFF | `send({"event": "OFF"})` | Triggers .alog linking (extracts UUID + batch #) |
 
-DROP's action slot is used by Hottop safety commands. COOL END is configured to send DROP instead.
+DROP's action slot is used by Hottop safety commands. COOL END is configured to send DROP instead. OFF triggers sentinel to scan for the newest .alog and extract roast identifiers for deterministic log matching.
 
 ### Message formats (`artisan_sync.py`)
 
@@ -219,7 +227,15 @@ DROP's action slot is used by Hottop safety commands. COOL END is configured to 
 - Native events: `{"message": "chargeEvent"}` (mapped via `ARTISAN_EVENT_MAP`)
 - Data polling: `{"command": "getData", "id": N}` (responded with dummy BT/ET data)
 
-### Phase mapping (`artisan_sync.py:70-78`)
+### Roast events (`artisan_sync.py:46`)
+
+```python
+ROAST_EVENTS = ["START", "CHARGE", "DRY", "FCs", "FCe", "SCs", "SCe", "DROP", "OFF"]
+```
+
+OFF is not a roast phase event — it signals that Artisan has saved the `.alog` file (autosave on OFF button). The sentinel uses this to link the session log to the `.alog` before pushing.
+
+### Phase mapping (`artisan_sync.py:74-82`)
 
 | Event | Phase |
 |-------|-------|
@@ -228,6 +244,37 @@ DROP's action slot is used by Hottop safety commands. COOL END is configured to 
 | FCs/FCe/SCs/SCe | development |
 | DROP | cooling |
 
+## Sentinel Session — Key Methods
+
+### `SentinelSession` instance vars (`sentinel.py:47-61`)
+
+| Var | Type | Description |
+|-----|------|-------------|
+| `bean_name` | str | Bean name for the session |
+| `session_id` | str | `YYYY-MM-DD_HHMM` timestamp |
+| `observations` | list | Vision observation dicts |
+| `roast_uuid` | str/None | From `.alog` `roastUUID`, set by `_link_alog()` |
+| `batch_nr` | int/None | From `.alog` `roastbatchnr`, set by `_link_alog()` |
+
+### `_link_alog()` (`sentinel.py:163-193`)
+
+Called when the OFF event is received. Scans `ARTISAN_SAVE_DIR` (env var, default `~/coffee-roasts`) for the newest `.alog` file, parses it with `ast.literal_eval()`, and extracts `roastUUID` and `roastbatchnr`. These are saved into the sentinel JSON for deterministic matching by `coffee-roasting/sentinel_loader.py`.
+
+### `_on_artisan_event()` (`sentinel.py:75-90`)
+
+Handles roast events from Artisan. Key behaviors:
+- Events in `CAPTURE_EVENTS` set → flag immediate capture
+- `DROP` → sets `self.running = False` to end session
+- `OFF` → calls `_link_alog()` to extract roast identifiers
+
+### `_save_log()` (`sentinel.py:214-231`)
+
+Writes session JSON including `roast_uuid` and `batch_nr` fields.
+
+### `_push_log()` (`sentinel.py:195-212`)
+
+Rsyncs the session log to the dev machine. Uses `SENTINEL_RSYNC_DEST` env var.
+
 ## Sentinel Capture Logic
 
 Two triggers run simultaneously:
@@ -235,7 +282,7 @@ Two triggers run simultaneously:
 1. **Event-triggered** — immediate capture on CHARGE, DRY, FCs, FCe, SCs, SCe, DROP
 2. **Timed interval** — phase-adaptive (drying: 30s, maillard: 20s, development: 10s, cooling: none)
 
-Camera opens on Artisan connect (ON/START), before CHARGE. Capture loop starts at CHARGE. Session ends on DROP or Ctrl+C. Partial logs are saved on interrupt.
+Camera opens on Artisan connect (ON/START), before CHARGE. Capture loop starts at CHARGE. Session ends on DROP or Ctrl+C. OFF (after DROP) triggers `.alog` linking but no capture. Partial logs are saved on interrupt.
 
 ## Session Log Schema
 
@@ -245,6 +292,8 @@ Saved to `captures/sentinel_YYYY-MM-DD_HHMM.json`:
 {
   "session_id": "2026-02-28_1518",
   "bean_name": "Ethiopia Yirgacheffe",
+  "roast_uuid": "a1b2c3d4-...",
+  "batch_nr": 42,
   "artisan_events": {"charge": 0.0, "dry": 270.5, "fcs": 450.2, "drop": 570.8},
   "observations": [
     {
@@ -259,6 +308,8 @@ Saved to `captures/sentinel_YYYY-MM-DD_HHMM.json`:
   ]
 }
 ```
+
+`roast_uuid` and `batch_nr` are populated by `_link_alog()` when the OFF event is received. They default to `""` and `0` respectively if OFF was not received or the `.alog` could not be parsed.
 
 Development score scale (1-10): green → pale yellow → tan → cinnamon → city → full city → dark → Vienna → French → Italian. Defined in `vision_client.py:149-160`.
 

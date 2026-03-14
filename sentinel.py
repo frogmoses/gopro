@@ -13,6 +13,7 @@ Capture frequency adapts to roast phase:
   - Development: every 10 seconds (most critical phase)
 """
 
+import ast
 import asyncio
 import json
 import os
@@ -56,6 +57,8 @@ class SentinelSession:
         self.latest_observation = None
         self.crack_status = None
         self.running = False
+        self.roast_uuid = None
+        self.batch_nr = None
 
         # Event-triggered capture flag — set by callback, consumed by async loop
         self._event_capture_pending = False
@@ -81,6 +84,10 @@ class SentinelSession:
         # DROP ends the session
         if event_name == "DROP":
             self.running = False
+
+        # OFF means Artisan just saved the .alog — link to it
+        if event_name == "OFF":
+            self._link_alog()
 
     def _on_artisan_connect(self):
         """Handle Artisan WebSocket connection."""
@@ -153,6 +160,38 @@ class SentinelSession:
 
         return result
 
+    def _link_alog(self):
+        """Find the newest .alog in Artisan's save directory and extract identifiers.
+
+        Called when OFF event is received, which means Artisan just wrote the .alog.
+        Extracts roastUUID and roastbatchnr for deterministic sentinel-to-roast linking.
+        """
+        save_dir = os.environ.get("ARTISAN_SAVE_DIR", "")
+        if not save_dir:
+            save_dir = os.path.expanduser("~/coffee-roasts")
+
+        save_path = Path(save_dir)
+        if not save_path.exists():
+            print(f"  Warning: Artisan save dir not found: {save_path}")
+            return
+
+        # Find the most recently modified .alog file
+        alogs = list(save_path.glob("*.alog"))
+        if not alogs:
+            print(f"  Warning: no .alog files in {save_path}")
+            return
+
+        newest = max(alogs, key=lambda p: p.stat().st_mtime)
+
+        try:
+            raw = ast.literal_eval(newest.read_text(encoding="utf-8"))
+            self.roast_uuid = raw.get("roastUUID", "")
+            self.batch_nr = raw.get("roastbatchnr", 0)
+            title = raw.get("title", "")
+            print(f"  Linked to .alog: #{self.batch_nr} {title} (UUID: {self.roast_uuid[:8]}...)")
+        except (ValueError, SyntaxError, OSError) as e:
+            print(f"  Warning: could not parse {newest.name}: {e}")
+
     def _push_log(self, log_file):
         """Push session log to dev machine via rsync (best-effort).
 
@@ -180,6 +219,8 @@ class SentinelSession:
         log_data = {
             "session_id": self.session_id,
             "bean_name": self.bean_name,
+            "roast_uuid": self.roast_uuid or "",
+            "batch_nr": self.batch_nr or 0,
             "artisan_events": {
                 k.lower(): v for k, v in self.artisan.events.items()
             },

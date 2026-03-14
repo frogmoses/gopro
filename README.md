@@ -95,7 +95,7 @@ In Artisan: **Config > Ports > WebSocket tab**
 | Port | `8765` |
 | Path | `WebSocket` |
 
-Configure button WebSocket Command actions for ON, START, CHARGE, DRY, FCs, FCe, and COOL END (sends DROP). See [CLAUDE.md](CLAUDE.md) for the full button mapping.
+Configure button WebSocket Command actions for ON, START, CHARGE, DRY, FCs, FCe, COOL END (sends DROP), and OFF (triggers .alog linking). See [CLAUDE.md](CLAUDE.md) for the full button mapping.
 
 ## Deployment
 
@@ -119,6 +119,8 @@ cd ~/CodeProjects/gopro
 {
   "session_id": "2026-02-28_1518",
   "bean_name": "Ethiopia Yirgacheffe",
+  "roast_uuid": "a1b2c3d4-...",
+  "batch_nr": 42,
   "artisan_events": {"charge": 0.0, "dry": 270.5, "fcs": 450.2, "drop": 570.8},
   "observations": [
     {
@@ -133,5 +135,7 @@ cd ~/CodeProjects/gopro
   ]
 }
 ```
+
+The `roast_uuid` and `batch_nr` fields are extracted from the `.alog` file when Artisan's OFF button is pressed. These enable deterministic matching between sentinel logs and roast logs in the analysis pipeline.
 
 For code-level details, SDK API notes, and tuning parameters, see [CLAUDE.md](CLAUDE.md).

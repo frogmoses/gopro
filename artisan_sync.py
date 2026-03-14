@@ -22,9 +22,12 @@ Configure Artisan buttons with WebSocket Command actions:
   FCe:    send({"event": "FCe"})
   DROP:   (Hottop Command — not available for WebSocket)
   COOL:   send({"event": "DROP"})  ← COOL END button sends DROP
+  OFF:    send({"event": "OFF"})   ← triggers .alog linking
 
 Note: DROP's action slot is used by Hottop safety commands.
 COOL END is configured to send DROP instead, ending the session.
+OFF is configured to send an event so sentinel can read the .alog
+that Artisan writes on OFF (autosave).
 """
 
 import asyncio
@@ -40,7 +43,7 @@ DEFAULT_PORT = 8765
 # Roast events we track, in expected order
 # START is included because Artisan sends it — we log it but it doesn't
 # change the roast phase (phase tracking begins at CHARGE)
-ROAST_EVENTS = ["START", "CHARGE", "DRY", "FCs", "FCe", "SCs", "SCe", "DROP"]
+ROAST_EVENTS = ["START", "CHARGE", "DRY", "FCs", "FCe", "SCs", "SCe", "DROP", "OFF"]
 
 # Artisan native event names → our standardized names.
 # Artisan sends these when WebSocket event tags are configured in the
@@ -64,6 +67,7 @@ ARTISAN_EVENT_MAP = {
     "SCs": "SCs",
     "SCe": "SCe",
     "DROP": "DROP",
+    "OFF": "OFF",
 }
 
 # Map events to roast phases
